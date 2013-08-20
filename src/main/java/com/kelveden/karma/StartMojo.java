@@ -27,6 +27,7 @@ import org.codehaus.plexus.util.StringUtils;
 import org.fusesource.jansi.AnsiConsole;
 
 import java.io.*;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -40,8 +41,8 @@ public class StartMojo extends AbstractMojo {
     /**
      * Path to the Karma configuration file.
      */
-    @Parameter(defaultValue = "${basedir}/karma.conf.js", property = "configFile", required = true)
-    private File configFile;
+    @Parameter(property = "configFiles", required = true)
+    private List<File> configFiles;
 
     /**
      * Comma-separated list of browsers. See the "browsers" section of the Karma online configuration documentation for
@@ -124,20 +125,30 @@ public class StartMojo extends AbstractMojo {
             return;
         }
 
-        final Process karma = createKarmaProcess();
+        List<ProcessBuilder> karmaProcesses = createKarmaProcess();
 
-        if (!executeKarma(karma) && singleRun) {
-            if (karmaFailureIgnore) {
-                getLog().warn("There were Karma test failures.");
-            } else {
-                throw new MojoFailureException("There were Karma test failures.");
+        for (ProcessBuilder karmaProcess : karmaProcesses) {
+            if (!executeKarma(karmaProcess) && singleRun) {
+                if (karmaFailureIgnore) {
+                    getLog().warn("There were Karma test failures.");
+                } else {
+                    throw new MojoFailureException("There were Karma test failures.");
+                }
             }
         }
 
         System.out.flush();
     }
 
-    private boolean executeKarma(final Process karma) throws MojoExecutionException {
+    private boolean executeKarma(ProcessBuilder karmaProcessBuilder) throws MojoExecutionException {
+
+        Process karma = null;
+        try {
+            karma = karmaProcessBuilder.start();
+        } catch (IOException e) {
+            resetAnsiConsole();
+            throw new MojoExecutionException("There was an error executing Karma.", e);
+        }
 
         BufferedReader karmaOutputReader = null;
         try {
@@ -165,39 +176,36 @@ public class StartMojo extends AbstractMojo {
         }
     }
 
-    private Process createKarmaProcess() throws MojoExecutionException {
+    private List<ProcessBuilder> createKarmaProcess() throws MojoExecutionException {
+        List<ProcessBuilder> processes = new ArrayList<ProcessBuilder>();
+        for (File configFile : configFiles) {
+            final ProcessBuilder builder;
 
-        final ProcessBuilder builder;
+            if (isWindows()) {
+                builder = new ProcessBuilder("cmd", "/C", karmaExecutable, "start", configFile.getAbsolutePath());
+            } else {
+                builder = new ProcessBuilder(karmaExecutable, "start", configFile.getAbsolutePath());
+            }
 
-        if (isWindows()) {
-          builder = new ProcessBuilder("cmd", "/C", karmaExecutable, "start", configFile.getAbsolutePath());
-        } else {
-          builder = new ProcessBuilder(karmaExecutable, "start", configFile.getAbsolutePath());
-        }
+            final List<String> command = builder.command();
 
-        final List<String> command = builder.command();
+            command.addAll(valueToKarmaArgument(browsers, "--browsers"));
+            command.addAll(valueToKarmaArgument(reporters, "--reporters"));
+            command.addAll(valueToKarmaArgument(singleRun, "--single-run", "--no-single-run"));
+            command.addAll(valueToKarmaArgument(autoWatch, "--auto-watch", "--no-auto-watch"));
+            command.addAll(valueToKarmaArgument(captureTimeout, "--capture-timeout"));
+            command.addAll(valueToKarmaArgument(reportSlowerThan, "--report-slower-than"));
+            command.addAll(valueToKarmaArgument(colors, "--colors"));
 
-        command.addAll(valueToKarmaArgument(browsers, "--browsers"));
-        command.addAll(valueToKarmaArgument(reporters, "--reporters"));
-        command.addAll(valueToKarmaArgument(singleRun, "--single-run", "--no-single-run"));
-        command.addAll(valueToKarmaArgument(autoWatch, "--auto-watch", "--no-auto-watch"));
-        command.addAll(valueToKarmaArgument(captureTimeout, "--capture-timeout"));
-        command.addAll(valueToKarmaArgument(reportSlowerThan, "--report-slower-than"));
-        command.addAll(valueToKarmaArgument(colors, "--colors"));
+            builder.redirectErrorStream(true);
 
-        builder.redirectErrorStream(true);
-
-        try {
             AnsiConsole.systemInstall();
 
             System.out.println(StringUtils.join(command.iterator(), " "));
 
-            return builder.start();
-
-        } catch (IOException e) {
-            resetAnsiConsole();
-            throw new MojoExecutionException("There was an error executing Karma.", e);
+            processes.add(builder);
         }
+        return processes;
     }
 
     private List<String> valueToKarmaArgument(final Boolean value, final String trueSwitch, final String falseSwitch) {
